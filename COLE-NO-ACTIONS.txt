@@ -1,0 +1,30 @@
+name: Gerar ISO Play Musica
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm
+      options: --privileged
+    steps:
+      - name: Preparar ferramentas
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates live-build debootstrap xorriso squashfs-tools \
+            syslinux syslinux-utils isolinux grub-pc-bin grub-efi-amd64-bin mtools dosfstools rsync
+
+      - uses: actions/checkout@v4
+
+      - name: Montar a ISO
+        run: bash montar-iso.sh amd64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlayMusica-amd64
+          path: PlayMusica-amd64.iso
+          compression-level: 0
