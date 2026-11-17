@@ -111,12 +111,51 @@ needs_root_rights=yes
 __FIM__
 
 
-# Video: driver generico VESA (funciona em qualquer placa antiga, sem depender de KMS)
-mkdir -p config/includes.chroot/etc/X11/xorg.conf.d
-cat > config/includes.chroot/etc/X11/xorg.conf.d/10-vesa.conf <<'__FIM__'
+# Video: o listrado azul vinha do VESA em 24/32 bits (placa so aceita outro formato).
+# Agora o padrao e VESA em 16 bits e 1024x768. O menu de boot (modo texto) deixa
+# escolher outro modo: o parametro jbvideo=... e lido pelo .bash_profile.
+cat > config/includes.chroot/etc/X11/xorg-vesa16.conf <<'__FIM__'
 Section "Device"
     Identifier "Video"
     Driver "vesa"
+EndSection
+Section "Monitor"
+    Identifier "Monitor0"
+EndSection
+Section "Screen"
+    Identifier "Screen0"
+    Device "Video"
+    Monitor "Monitor0"
+    DefaultDepth 16
+    SubSection "Display"
+        Depth 16
+        Modes "1024x768" "800x600" "640x480"
+    EndSubSection
+EndSection
+__FIM__
+cat > config/includes.chroot/etc/X11/xorg-vesa24.conf <<'__FIM__'
+Section "Device"
+    Identifier "Video"
+    Driver "vesa"
+EndSection
+Section "Monitor"
+    Identifier "Monitor0"
+EndSection
+Section "Screen"
+    Identifier "Screen0"
+    Device "Video"
+    Monitor "Monitor0"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "1024x768" "800x600" "640x480"
+    EndSubSection
+EndSection
+__FIM__
+cat > config/includes.chroot/etc/X11/xorg-fbdev.conf <<'__FIM__'
+Section "Device"
+    Identifier "Video"
+    Driver "fbdev"
 EndSection
 __FIM__
 
@@ -127,10 +166,26 @@ options snd_hda_intel power_save=0 power_save_controller=N
 __FIM__
 
 cat > config/includes.chroot/etc/skel/.bash_profile <<'__FIM__'
-# Abre o jukebox direto na tela cheia (sem desktop) ao logar no tty1
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  exec startx
+# Abre o jukebox direto na tela cheia (sem desktop) ao logar no tty1.
+# O modo de video vem do menu de boot (parametro jbvideo=... no kernel).
+JB="$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^jbvideo=//p' | head -n1)"
+tentar() {  # tenta abrir o X; "ok" se ele ficou aberto por 20s ou mais
+  t0=$(date +%s)
+  if [ -n "$1" ]; then startx -- -config "$1"; else startx; fi
+  [ $(( $(date +%s) - t0 )) -ge 20 ]
+}
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ] && [ "$JB" != "texto" ]; then
+  case "$JB" in
+    vesa16) tentar xorg-vesa16.conf || tentar xorg-fbdev.conf ;;
+    vesa24) tentar xorg-vesa24.conf || tentar xorg-vesa16.conf ;;
+    fbdev)  tentar xorg-fbdev.conf  || tentar xorg-vesa16.conf ;;
+    auto)   tentar ""               || tentar xorg-vesa16.conf ;;
+    *)      tentar ""               || tentar xorg-fbdev.conf || tentar xorg-vesa16.conf ;;
+  esac
+  sleep 2
+  exit
 fi
+[ "$JB" = "texto" ] && echo "Modo diagnostico (texto). Para abrir o jukebox digite: startx"
 __FIM__
 
 cat > config/includes.chroot/etc/skel/.xinitrc <<'__FIM__'
@@ -188,8 +243,63 @@ __FIM__
 
 cat > config/hooks/normal/0200-boot-rapido.hook.binary <<'__FIM__'
 #!/bin/sh
-# Entra direto no sistema, sem mostrar o menu de boot
-if [ -f binary/isolinux/live.cfg ] && [ -f binary/isolinux/isolinux.cfg ]; then
+# Menu de boot (BIOS) em MODO TEXTO, sem vesamenu/graficos: entra sozinho no modo 1
+# em 8 segundos, ou o usuario digita 1-5 e aperta ENTER para trocar o modo de video.
+F=binary/isolinux/live.cfg
+KER=""; INI=""; APP=""
+if [ -f "$F" ]; then
+  KER="$(grep -m1 -E '^[[:space:]]*(linux|kernel)[[:space:]]' "$F" | awk '{print $2}')"
+  INI="$(grep -m1 -E '^[[:space:]]*initrd[[:space:]]' "$F" | awk '{print $2}')"
+  APP="$(grep -m1 -E '^[[:space:]]*append[[:space:]]' "$F" | sed -E 's/^[[:space:]]*append[[:space:]]+//')"
+fi
+if [ -n "$KER" ] && [ -n "$INI" ] && [ -d binary/isolinux ]; then
+  BASE="$(echo "$APP" | sed -E 's/(^| )nomodeset//g; s/(^| )vga=[^ ]+//g; s/(^| )splash//g')"
+  DIAG="$(echo "$BASE" | sed -E 's/(^| )quiet//g; s/(^| )loglevel=[0-9]+//g')"
+  cat > binary/isolinux/boot.txt <<'EOF'
+
+   PLAY MUSICA - escolha o modo de video e aperte ENTER
+   (sem escolher, entra sozinho no modo 1 em 8 segundos)
+
+   1   Padrao (VESA 16 bits)
+   2   Video: framebuffer (fbdev)
+   3   Video: com aceleracao (KMS, sem nomodeset)
+   4   Video: VESA 24 bits
+   5   Diagnostico (so texto, mostra as mensagens)
+
+EOF
+  cat > binary/isolinux/isolinux.cfg <<EOF
+prompt 1
+timeout 80
+default 1
+display boot.txt
+
+label 1
+  linux $KER
+  initrd $INI
+  append $BASE nomodeset jbvideo=vesa16
+
+label 2
+  linux $KER
+  initrd $INI
+  append $BASE nomodeset vga=791 jbvideo=fbdev
+
+label 3
+  linux $KER
+  initrd $INI
+  append $BASE jbvideo=auto
+
+label 4
+  linux $KER
+  initrd $INI
+  append $BASE nomodeset jbvideo=vesa24
+
+label 5
+  linux $KER
+  initrd $INI
+  append $DIAG nomodeset jbvideo=texto
+EOF
+elif [ -f binary/isolinux/live.cfg ] && [ -f binary/isolinux/isolinux.cfg ]; then
+  # plano B: so entra direto, sem menu
   L="$(grep -m1 "^label " binary/isolinux/live.cfg | awk "{print \$2}")"
   [ -n "$L" ] && sed -i -E "s/^default .*/default $L/" binary/isolinux/isolinux.cfg
   grep -q "^timeout" binary/isolinux/isolinux.cfg || echo "timeout 1" >> binary/isolinux/isolinux.cfg
