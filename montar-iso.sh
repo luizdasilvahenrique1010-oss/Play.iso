@@ -306,9 +306,47 @@ elif [ -f binary/isolinux/live.cfg ] && [ -f binary/isolinux/isolinux.cfg ]; the
   sed -i -E "s/^timeout .*/timeout 1/" binary/isolinux/isolinux.cfg
   grep -q "^prompt" binary/isolinux/isolinux.cfg || echo "prompt 0" >> binary/isolinux/isolinux.cfg
 fi
-for f in binary/boot/grub/*.cfg; do
-  [ -f "$f" ] && sed -i -E "s/^set timeout=.*/set timeout=0/" "$f"
-done
+# Menu do GRUB (boot UEFI, so amd64) com as mesmas opcoes de video.
+# No UEFI o VESA nao funciona (nao ha BIOS de video), por isso o padrao la e o KMS.
+G=binary/boot/grub/grub.cfg
+GL=""
+[ -f "$G" ] && GL="$(grep -m1 -E '^[[:space:]]*linux[[:space:]]' "$G")"
+GI="$(grep -m1 -E '^[[:space:]]*initrd[[:space:]]' "$G" 2>/dev/null | awk '{print $2}')"
+GK="$(echo "$GL" | awk '{print $2}')"
+if [ -n "$GK" ] && [ -n "$GI" ]; then
+  GA="$(echo "$GL" | sed -E 's/^[[:space:]]*linux[[:space:]]+[^[:space:]]+[[:space:]]*//')"
+  GB="$(echo "$GA" | sed -E 's/(^| )nomodeset//g; s/(^| )vga=[^ ]+//g; s/(^| )splash//g')"
+  GD="$(echo "$GB" | sed -E 's/(^| )quiet//g; s/(^| )loglevel=[0-9]+//g')"
+  cat > "$G" <<EOF
+set default=0
+set timeout=8
+
+menuentry "1  Padrao (KMS - aceleracao, melhor para UEFI)" {
+  linux $GK $GB jbvideo=auto
+  initrd $GI
+}
+menuentry "2  Video: framebuffer (fbdev)" {
+  linux $GK $GB nomodeset jbvideo=fbdev
+  initrd $GI
+}
+menuentry "3  Video: VESA 16 bits (so BIOS antigo)" {
+  linux $GK $GB nomodeset jbvideo=vesa16
+  initrd $GI
+}
+menuentry "4  Video: VESA 24 bits (so BIOS antigo)" {
+  linux $GK $GB nomodeset jbvideo=vesa24
+  initrd $GI
+}
+menuentry "5  Diagnostico (so texto, mostra as mensagens)" {
+  linux $GK $GD nomodeset jbvideo=texto
+  initrd $GI
+}
+EOF
+else
+  for f in binary/boot/grub/*.cfg; do
+    [ -f "$f" ] && sed -i -E "s/^set timeout=.*/set timeout=0/" "$f"
+  done
+fi
 exit 0
 __FIM__
 
